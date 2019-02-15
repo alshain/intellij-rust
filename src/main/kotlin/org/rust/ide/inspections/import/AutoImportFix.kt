@@ -493,6 +493,7 @@ private fun RsMod.insertExternCrateItem(psiFactory: RsPsiFactory, crateName: Str
 
 private fun RsMod.insertUseItem(psiFactory: RsPsiFactory, usePath: String) {
     val useItem = psiFactory.createUseItem(usePath)
+    if (tryMergeWithOtherUseItems(psiFactory, useItem)) return
     val anchor = childrenOfType<RsUseItem>().lastElement ?: childrenOfType<RsExternCrateItem>().lastElement
     if (anchor != null) {
         val insertedUseItem = addAfter(useItem, anchor)
@@ -504,6 +505,50 @@ private fun RsMod.insertUseItem(psiFactory: RsPsiFactory, usePath: String) {
         addAfter(psiFactory.createNewline(), firstItem)
     }
 }
+
+private fun RsMod.tryMergeWithOtherUseItems(psiFactory: RsPsiFactory, newUseItem: RsUseItem): Boolean =
+    childrenOfType<RsUseItem>().any { newUseItem.tryMergeWith(psiFactory, it) }
+
+private fun RsUseItem.tryMergeWith(psiFactory: RsPsiFactory, other: RsUseItem): Boolean {
+    if (other.vis != null ||
+        other.outerAttrList.isNotEmpty() ||
+        other.useSpeck?.alias != null ||
+        other.useSpeck?.isStarImport == true) return false
+
+    val parentPath = parentPath ?: return false
+    val importingName = importingNames?.singleOrNull() ?: return false
+    val otherParentPath = other.parentPath ?: return false
+    val otherImportingNames = other.importingNames ?: return false
+
+    if (parentPath != otherParentPath) return false
+    val newUsePath = parentPath.joinToString("::", postfix = "::") +
+        (otherImportingNames + importingName).joinToString(", ", "{", "}")
+    val newUseItem = psiFactory.createUseItem(newUsePath)
+    other.replace(newUseItem)
+    return true
+}
+
+private val RsUseItem.parentPath: List<String>?
+    get() {
+        val path = pathAsList ?: return null
+        return if (useSpeck?.useGroup != null) path else path.dropLast(1)
+    }
+
+private val RsUseItem.importingNames: List<String>?
+    get() {
+        if (useSpeck?.isStarImport == true) return null
+        val path = pathAsList ?: return null
+        val groupedNames = useSpeck?.useGroup?.useSpeckList?.map { it.text }
+        val lastName = path.lastOrNull()
+        return when {
+            groupedNames != null -> groupedNames
+            lastName != null -> listOf(lastName)
+            else -> null
+        }
+    }
+
+private val RsUseItem.pathAsList: List<String>?
+    get() = useSpeck?.path?.text?.split("::")
 
 @Suppress("DataClassPrivateConstructor")
 data class ImportContext private constructor(
